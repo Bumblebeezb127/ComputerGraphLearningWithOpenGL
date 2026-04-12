@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="01-Pipline.vcxproj" Id="b95edb0d-29ef-46d1-bcc3-ddcb9849b087" />
+</Solution>

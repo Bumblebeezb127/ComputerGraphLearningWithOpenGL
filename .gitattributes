@@ -1,0 +1,19 @@
+# Set default behavior to automatically handle line endings
+* text=auto
+
+# Source code files
+*.cpp text
+*.h text
+*.glsl text
+*.hpp text
+
+# Image files - binary
+*.jpg binary
+*.png binary
+
+# 3D model files - binary
+*.obj binary
+
+# Visual Studio solution files
+*.slnx binary
+*.vcxproj binary

@@ -1,0 +1,18 @@
+# Build outputs
+**/x64/
+**/*.ilk
+**/*.pdb
+**/*.idb
+**/*.pch/
+**/*.tlog/
+**/*.log
+
+# Visual Studio
+**/.vs/
+**/ipch/
+
+# Shadow module (not needed)
+06-Shadow/
+
+# 3D model files (generated/build artifacts)
+*.obj
