@@ -179,9 +179,9 @@ void init(GLFWwindow* window) {
 
 	cameraX = 0.0f; cameraY = 0.0f; cameraZ = 2.5f;
 	SphereLocX = 0.0f; SphereLocY = 0.0f; SphereLocZ = 0.0f;
-	//setupVertices();
+	setupVertices();
 	//setupVertices2();
-	setupVertices3();
+	//setupVertices3();
 	setupTextures();
 }
 
@@ -385,7 +385,9 @@ int main() {
 
 
 
-		display3(window, glfwGetTime());
+		//display3(window, glfwGetTime());
+		//display2(window, glfwGetTime());
+		display(window, glfwGetTime());
 
 
 		glfwSwapBuffers(window);

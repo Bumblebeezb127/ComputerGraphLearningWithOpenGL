@@ -9,10 +9,12 @@
 ```
 OpenGL/
 ├── 01-Pipeline/          # 渲染管道与基础绘制
-├── 02-DataManagement/    # 数据管理与变换
-├── 03-Texture/          # 纹理映射技术
-├── 04-3DModel/          # 3D模型加载与几何体生成
-├── 05-Lighting/         # 光照模型（已忽略 06-Shadow）
+├── 02-DataManagement/     # 数据管理与变换
+├── 03-Texture/            # 纹理映射技术
+├── 04-3DModel/           # 3D模型加载与几何体生成
+├── 05-Lighting/           # 光照模型
+├── 06-Shadow/             # 阴影映射
+├── 07-Skybox/             # 天空盒与第一人称相机
 ```
 
 ---
@@ -1227,6 +1229,392 @@ glBindTexture(GL_TEXTURE_2D, dolphinTexture);
 
 ---
 
+## 模块六：06-Shadow - 阴影映射技术
+
+### 概述
+
+阴影是增强3D场景真实感的重要因素。本模块实现了基于深度图的阴影映射算法，这是一种实时渲染中广泛使用的阴影技术。阴影映射通过从光源视角渲染场景生成深度图，然后与正常渲染时计算每个像素相对于光源的深度进行对比，判断该像素是否处于阴影中。本模块还实现了多层采样柔和阴影算法，有效消除硬阴影边缘的锯齿感。
+
+### 核心知识点
+
+#### 1. 阴影映射算法原理
+
+阴影映射是一种基于深度比较的阴影技术，基本思想是从光源位置渲染场景获取深度图，然后比较每个像素的深度值来判断是否被阴影覆盖。
+
+**两遍渲染架构**：
+- **Pass 1（深度图生成）**：从光源视角渲染场景，仅计算深度值存储到深度纹理
+- **Pass 2（阴影检测）**：从相机视角渲染场景，对每个像素计算其到光源的深度，与深度图中存储的最近深度比较
+
+#### 2. 帧缓冲区对象（FBO）与深度纹理
+
+自定义帧缓冲区用于存储阴影深度图：
+
+```cpp
+void setupShadowBuffers(GLFWwindow* window) {
+    glGenFramebuffers(1, &shadowBuffer);
+    glGenTextures(1, &shadowTex);
+    glBindTexture(GL_TEXTURE_2D, shadowTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32,
+                 scSizeX, scSizeY, 0, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+}
+```
+
+关键参数解析：
+- `GL_DEPTH_COMPONENT32`：32位深度分量格式，提供足够的深度精度
+- `GL_COMPARE_REF_TO_TEXTURE`：启用深度值与纹理比较的模式，用于阴影检测
+- `GL_COMPARE_FUNC`：比较函数设置为GL_LEQUAL（小于等于通过）
+
+#### 3. 深度图渲染Pass One
+
+第一遍渲染使用简单着色器，仅输出顶点到光源空间的变换坐标：
+
+```glsl
+#version 430
+layout (location=0) in vec3 vertPos;
+uniform mat4 shadowMVP;
+void main(void)
+{   gl_Position = shadowMVP * vec4(vertPos,1.0);
+}
+```
+
+`shadowMVP`是从模型空间到光源裁剪空间的变换矩阵：
+
+```cpp
+shadowMVP1 = lightPmatrix * lightVmatrix * mMat;
+```
+
+#### 4. 阴影偏移与阴影痤疮
+
+由于深度图分辨率有限和浮点精度问题，直接比较深度会产生"阴影痤疮"（Shadow Acne）。解决方案是使用恒定偏移或基于斜率的偏移：
+
+```cpp
+b = glm::mat4(
+    0.5f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.5f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.5f, 0.0f,
+    0.5f, 0.5f, 0.5f, 1.0f);
+shadowMVP2 = b * lightPmatrix * lightVmatrix * mMat;
+```
+
+矩阵b将深度值从[-1,1]范围映射到[0,1]范围，便于存储到纹理中。
+
+#### 5. 阴影检测与textureProj
+
+第二遍着色器中进行阴影检测：
+
+```glsl
+float lookup(float x, float y)
+{   float t = textureProj(shadowTex, shadow_coord + vec4(x * 0.001 * shadow_coord.w,
+                                                         y * 0.001 * shadow_coord.w,
+                                                         -0.01, 0.0));
+    return t;
+}
+```
+
+`textureProj`函数将4D坐标投影到2D纹理坐标，并与存储的深度值比较。额外添加的偏移量(x, y)用于柔和阴影采样。
+
+#### 6. 柔和阴影与多层采样
+
+硬阴影边缘有明显的锯齿，使用多层采样平均可以产生柔和阴影效果：
+
+```glsl
+// 64采样高分辨率柔和阴影
+float width = 2.5;
+float endp = width * 3.0 + width/2.0;
+for (float m=-endp ; m<=endp ; m=m+width)
+{   for (float n=-endp ; n<=endp ; n=n+width)
+    {   shadowFactor += lookup(m,n);
+    }
+}
+shadowFactor = shadowFactor / 64.0;
+```
+
+在阴影坐标周围2.5像素范围内进行8×8=64次采样并平均，得到柔和的阴影边界。
+
+#### 7. 片段着色器中的阴影着色
+
+```glsl
+void main(void)
+{   float shadowFactor = 0.0;
+    vec3 L = normalize(vLightDir);
+    vec3 N = normalize(vNormal);
+    vec3 V = normalize(-vVertPos);
+    vec3 H = normalize(vHalfVec);
+
+    // 计算柔和阴影因子
+    // ... 64次lookup采样循环 ...
+
+    vec4 shadowColor = globalAmbient * material.ambient + light.ambient * material.ambient;
+    vec4 lightedColor = light.diffuse * material.diffuse * max(dot(L,N),0.0)
+                       + light.specular * material.specular
+                       * pow(max(dot(H,N),0.0),material.shininess*3.0);
+
+    fragColor = vec4((shadowColor.xyz + shadowFactor*(lightedColor.xyz)),1.0);
+}
+```
+
+核心公式：`最终颜色 = 阴影颜色 + 阴影因子 × 受光颜色`
+
+阴影区域（shadowFactor=0）只显示环境光，完全照亮区域（shadowFactor=1）显示完整光照效果。
+
+#### 8. Pass管理渲染流程
+
+```cpp
+void display(GLFWwindow* window, double currentTime) {
+    // 从光源视角初始化
+    lightVmatrix = glm::lookAt(currentLightPos, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    lightPmatrix = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 1000.0f);
+
+    // Pass 1: 渲染到阴影FBO
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowBuffer);
+    glFramebufferTexture(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadowTex, 0);
+    glDrawBuffer(GL_NONE);
+    glEnable(GL_DEPTH_TEST);
+    passOne();
+
+    // Pass 2: 渲染到屏幕
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, shadowTex);
+    glDrawBuffer(GL_FRONT);
+    passTwo();
+}
+```
+
+关键操作：切换帧缓冲区目标、关闭颜色绘制只保留深度、启用/禁用深度测试等。
+
+### 关键点总结
+
+本模块的关键点包括：理解阴影映射算法的两遍渲染架构；掌握FBO创建和深度纹理配置；理解`GL_COMPARE_REF_TO_TEXTURE`模式的作用；理解shadow痤疮产生原因和解决方案；掌握多层采样柔和阴影的原理；理解`textureProj`函数在阴影检测中的应用；掌握从光源视角构建深度图的技术；理解阴影因子如何与光照分量混合。
+
+---
+
+## 模块七：07-Skybox - 天空盒与第一人称相机
+
+### 概述
+
+本模块在阴影映射基础上添加了天空盒效果和第一人称相机控制系统。天空盒是一种模拟无限远天空和环境的技术，通过在场景周围渲染一个立方体并在其内表面贴上环境纹理实现。第一人称相机控制系统让用户可以自由探索3D场景，支持键盘移动和鼠标视角控制。此外，本模块还集成了ImGui用于运行时调试参数的图形化调整界面。
+
+### 核心知识点
+
+#### 1. 天空盒原理
+
+天空盒是一个包围整个场景的立方体，立方体内表面贴有环境纹理。由于天空盒代表无限远的背景，需要特殊处理确保它始终作为背景出现：
+
+```cpp
+void passTwo(void) {
+    // skybox
+    isSkybox = 1.0f;
+    mMat = Utils::getInstance().transform(cameraLoc, -cameraRot);
+    mvMat = Utils::getInstance().transform(-cameraLoc) * mMat;
+
+    // 禁用深度写入绘制天空盒
+    glDisable(GL_DEPTH_TEST);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glEnable(GL_DEPTH_TEST);
+}
+```
+
+关键点：先绘制天空盒，然后清除深度缓冲区，再绘制其他物体，最后绘制物体时会自动覆盖天空盒。
+
+#### 2. 天空盒着色器
+
+天空盒使用专门的着色器路径，仅进行纹理采样不做光照计算：
+
+```glsl
+void skybox(){
+    tc = texCoord;
+    gl_Position = proj_matrix * mv_matrix * vec4(vertPos,1.0);
+}
+
+void main(void)
+{   if(isSkybox==1.0f){
+        skybox();
+    } else {
+        model();
+    }
+}
+```
+
+uniform `isSkybox`用于在运行时切换着色器行为，无需编译两个独立着色器程序。
+
+#### 3. 立方体纹理坐标映射
+
+立方体的6个面需要正确的纹理坐标以消除接缝：
+
+```cpp
+float cubeTextureCoord[72] = {
+    // back face lower right
+    1.00f, 0.6666666f, 1.00f, 0.3333333f, 0.75f, 0.3333333f,
+    // ... 共6个面，每个面4个顶点，每个顶点2个纹理坐标
+};
+```
+
+纹理坐标的排列确保相邻面的纹理能够正确衔接。天空盒通常使用立方体全景图或6张独立的环境图像。
+
+#### 4. 第一人称相机数学
+
+第一人称相机需要维护三个正交向量和位置：
+
+```cpp
+struct Camera {
+    glm::vec3 position;      // 相机位置
+    glm::vec3 front;         // 观察方向
+    glm::vec3 up;            // 世界坐标系上向量
+    glm::vec3 right;         // 右向量
+    float yaw;               // 偏航角（水平旋转）
+    float pitch;             // 俯仰角（垂直旋转）
+    float mouseSensitivity;  // 鼠标灵敏度
+    float movementSpeed;      // 移动速度
+};
+```
+
+鼠标移动计算角度变化：
+
+```cpp
+void mouse_callback(GLFWwindow* window, double xpos, double ypos) {
+    float xoffset = xpos - lastX;
+    float yoffset = lastY - ypos;
+    lastX = xpos;
+    lastY = ypos;
+
+    xoffset *= camera.mouseSensitivity;
+    yoffset *= camera.mouseSensitivity;
+
+    camera.yaw += xoffset;
+    camera.pitch += yoffset;
+
+    if (camera.pitch > 89.0f) camera.pitch = 89.0f;
+    if (camera.pitch < -89.0f) camera.pitch = -89.0f;
+
+    camera.updateVectors();
+}
+```
+
+俯仰角限制在±89度防止万向锁。
+
+#### 5. 相机向量更新
+
+根据偏航角和俯仰角计算观察向量：
+
+```cpp
+void Camera::updateVectors() {
+    glm::vec3 front;
+    front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+    front.y = sin(glm::radians(pitch));
+    front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+    front = glm::normalize(front);
+
+    this->front = front;
+    this->right = glm::normalize(glm::cross(front, worldUp));
+    this->up = glm::normalize(glm::cross(right, front));
+}
+```
+
+三角函数将球面坐标（yaw, pitch）转换为笛卡尔方向向量。
+
+#### 6. 键盘移动控制
+
+```cpp
+void processKeyboard(GLFWwindow* window, float deltaTime) {
+    float velocity = camera.movementSpeed * deltaTime;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        camera.position += camera.front * velocity;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        camera.position -= camera.front * velocity;
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        camera.position -= camera.right * velocity;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        camera.position += camera.right * velocity;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+        camera.position -= camera.worldUp * velocity;  // 下降
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+        camera.position += camera.worldUp * velocity;   // 上升
+}
+```
+
+使用deltaTime确保移动速度与帧率无关。
+
+#### 7. ImGui集成
+
+ImGui提供运行时GUI控制能力：
+
+```cpp
+Utils::getInstance().ImGuiInit(window, "#version 430");
+
+// 在渲染循环中
+Utils::getInstance().ImGuiRender([]()->void {
+    ImGui::Begin("Controls");
+    ImGui::SliderFloat3("Light Position", &lightLoc.x, -10.0f, 10.0f);
+    ImGui::SliderFloat3("Camera Position", &cameraLoc.x, -10.0f, 10.0f);
+    ImGui::SliderFloat3("Camera Rotation", &cameraRot.x, -180.0f, 180.0f);
+    ImGui::Text("FPS: %.0f", FPS);
+    ImGui::End();
+});
+```
+
+Lambda表达式封装GUI回调，SliderFloat3创建滑块控制器。
+
+#### 8. 鼠标锁定与Tab切换
+
+```cpp
+glfwSetCursorPosCallback(window, mouse_callback);
+glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+while (!glfwWindowShouldClose(window)) {
+    if (glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS) {
+        if (cursorVisible) {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            cursorVisible = false;
+        } else {
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            cursorVisible = true;
+        }
+    }
+}
+```
+
+Tab键切换鼠标锁定状态，释放鼠标进行GUI操作时锁定游戏视角。
+
+#### 9. FPS计算与显示
+
+```cpp
+#define START_DRAW currentFrame = glfwGetTime(); \
+                    if (lastFrame == 0.0) lastFrame = currentFrame; \
+                    deltaTime = currentFrame - lastFrame; \
+                    if (FPS == 0.0) FPS = 1.0 / deltaTime; \
+                    addTime += deltaTime; \
+                    if (addTime >= 1.0) { FPS = 1.0 / deltaTime; addTime = 0.0; }
+```
+
+每秒更新一次FPS显示，避免数字跳动过快。deltaTime用于所有与时间相关的计算。
+
+#### 10. 统一的transform工具函数
+
+Utils类提供矩阵变换的统一接口：
+
+```cpp
+glm::mat4 transform(glm::vec3 translation, glm::vec3 rotation) {
+    glm::mat4 mat = glm::translate(glm::mat4(1.0f), translation);
+    mat = glm::rotate(mat, glm::radians(rotation.x), glm::vec3(1.0f, 0.0f, 0.0f));
+    mat = glm::rotate(mat, glm::radians(rotation.y), glm::vec3(0.0f, 1.0f, 0.0f));
+    mat = glm::rotate(mat, glm::radians(rotation.z), glm::vec3(0.0f, 0.0f, 1.0f));
+    return mat;
+}
+```
+
+简化了多处需要组合平移和旋转的场景代码。
+
+### 关键点总结
+
+本模块的关键点包括：理解天空盒作为无限远背景的实现原理；掌握立方体纹理坐标映射以消除接缝；理解第一人称相机的数学模型（偏航角、俯仰角）；掌握鼠标控制视角的算法实现；理解相机三个正交向量的计算方法；掌握键盘WASD+QE移动控制的实现；理解ImGui集成用于运行时调试；理解鼠标锁定切换和deltaTime时间无关运动；掌握多纹理单元绑定（阴影纹理+天空盒纹理）；理解分层渲染（天空盒→物体）和深度缓冲管理。
+
+---
+
 ## 通用开发环境配置
 
 ### 依赖库
@@ -1257,5 +1645,7 @@ glBindTexture(GL_TEXTURE_2D, dolphinTexture);
 3. **提升**：03-Texture学习纹理映射增强视觉表现
 4. **扩展**：04-3DModel了解复杂几何体和模型加载
 5. **深入**：05-Lighting掌握光照模型创造真实感
+6. **增强**：06-Shadow学习阴影映射提升立体感
+7. **综合**：07-Skybox集成天空盒、相机控制和GUI实现完整场景
 
 建议按顺序学习每个模块，理解其中的原理后再进入下一模块。每完成一个模块，尝试修改代码参数或添加新功能以加深理解。

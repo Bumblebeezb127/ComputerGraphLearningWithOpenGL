@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="07-Skybox.vcxproj" Id="07260b30-a42d-444e-8dc7-53732e6cfdcc" />
+</Solution>

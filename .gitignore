@@ -13,6 +13,3 @@
 
 # Shadow module (not needed)
 06-Shadow/
-
-# 3D model files (generated/build artifacts)
-*.obj
