@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="06-Shadow.vcxproj" Id="b2a49082-a592-4329-ae50-0785dd9fa6ff" />
+</Solution>
